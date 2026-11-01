@@ -1,0 +1,33 @@
+name: Lint & Format Gate
+
+# First real gate: block the PR if code isn't formatted/linted.
+# Cheapest possible check (seconds, no network calls beyond deps).
+# so it runs before anything expensive
+
+on:
+  pull_request:
+    branches: [main]
+  
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install lint tools
+        run: pip install ruff black
+      
+      - name: Check formatting (black --check, never auto-fix in CI)
+        run: black --check
+
+      - name: Lint (ruff)
+        run: ruff check

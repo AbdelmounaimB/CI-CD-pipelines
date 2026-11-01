@@ -1,0 +1,23 @@
+name: Minimal CI
+
+# The smallest useful pipeline: react to a push PR, checkout the code,
+# and run one command.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read   # least privilege: this job only needs to read the repo
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v4
+      
+      - name: run a command
+        run: echo "Pipeline is alive"

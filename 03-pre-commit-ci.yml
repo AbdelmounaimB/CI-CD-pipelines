@@ -1,0 +1,32 @@
+name: Pre-commit CI
+
+# Devs can skip/forget local pre-commit hooks. This re-runs the exact same
+# .pre-commit-config.yaml in CI so the check is never optional. Single
+# Source of truth: one config file drives both local and CI checks.
+
+on:
+  pull_requests:
+    branches: [main]
+  
+  permissions:
+    contents: read
+
+  jobs:
+    pre-coomit:
+      runs-on: ubuntu-latest
+      steps:
+        - uses: actions/checkout@v4
+
+        - uses: actions/setup-python@v6
+          with:
+            python-version: "3.12"
+
+        - name: Cache pre-commit environments
+          uses: actions/cache@v4
+          with:
+            path: ~/.cache/pre-commit
+            key: pre-commit-${{ hashFiles('.pre-commit-config.yaml') }}
+
+        - name: Run pre-commit
+          uses: pre-commit/actions@v3
+

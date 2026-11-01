@@ -1,0 +1,34 @@
+name: Code Review
+
+# This workflow doesn't run tests - it enforces a PROCESS: no PR merges
+# without the right humans approving. Most of the enforcement actually
+# lives in a branch protection rule + CODEOWNERS file (not in YAML), so
+# this file's job is to add a check that's easy to see fail, plus a
+# CODEOWNERS example alongside it.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, review_requested]
+
+permissions:
+  pull_requests: read
+  contents: read
+
+jobs:
+  require-codeowner-review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify at least one CODEOWNERS approval exists
+        uses: actions/github-script@v7
+        with:
+          script: | 
+            const { data: reviews } = await github.rest.pulls.listReviews({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+            });
+            const approved = reviews.some(r => r.state === 'APPROVED');
+            if (!approved) {
+              core.setFailed('No approved review yet -- CODEOWNERS approval required before merge');
+            }

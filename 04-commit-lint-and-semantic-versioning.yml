@@ -1,0 +1,43 @@
+name: Commit Lint & Semantic Versioning
+
+# Enforces Conventional Commits on every PR title/commits, then (on merge to main)
+# computes the semver version and cuts a GitHub release
+# automatically -- no human decides "is this a major/minor/patch" by hand.
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, edited, synchronize]
+  push:
+    branches: [main]
+
+permissions:
+  contents: write     # needed only by the release job, to create tags/releases
+
+jobs:
+  commit-lint:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history needed to inspect all commits in the PR
+
+      - name: Validate PR title follows Conventional Commits
+        uses: amannn/actions-semantic-pull-request@v5
+        env: 
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with: 
+          fetch-depth: 0
+      - name: Determine next version & publish release notes
+        uses: googleapis/release-please-actions@v4
+        with:
+          release-type: python     # swap per project language; drives changelog template
