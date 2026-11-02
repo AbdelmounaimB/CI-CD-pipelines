@@ -1,0 +1,70 @@
+name: Integration Tests
+
+# Runs tests against real dependencies(Postgres, Redis) started as
+# sidecar containers next to the job. No mocks: this what verifies 
+# your SQL, migrations and cache logic actually work
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  
+  permissions:
+    contents: read
+
+  jobs:
+    integration:
+      runs-on: ubuntu-latest
+      timeout-minutes: 15
+
+      # Service containers: started BEFORE the steps, destroyed after the job
+      services:
+        postgres:
+          image: postgres:16-alpine       # pin a version: never latest
+          env:
+            POSTGRES_USER: test
+            POSTGRES_PASSWORD: test       # throwaway credential, container dies with the job
+            POSTGRES_DB: app_test
+          ports:
+            - 5432:5432                   # maps container port to the runner (localhost:5432)
+          options: >-
+            --health-cmd "pg_isready -U test -d app_test"
+            --health-interval 5s
+            --health-timeout 5s
+            --health-retries 10
+
+        redis:
+          image: redis:7-alpine
+          ports:
+            - 6379:6379
+          options: >-
+            --health-cmd "redis-cli ping"
+            --health-interval 5s
+            --health-timeout 5s
+            --health-retries 10
+
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/app_test
+          REDIS_URL: redis://localhost:6379/0
+
+        steps:
+          - uses: actions/checkout@v6
+
+          - uses: actions/setup-python@v5
+            with:
+              python-version: "3.12"
+              cache: "pip"
+
+          - name: Install dependencies
+            run: pip install -r requirements.txt pytest
+
+          # Health checks make the job wait until services report healthy, so
+          # no sleep hacks are needed. Migrations run before tests, exactly as
+          # they would in a real deployment
+          - name: Apply database migrations
+            run: alembic upgrade head
+
+          - name: Run integrations tests
+            run: pytest tests/integration -v --maxfail=5
+        

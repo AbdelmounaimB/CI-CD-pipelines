@@ -1,0 +1,55 @@
+name: Unit Tests & Coverage
+
+# Runs the unit test suits and FAILS the PR if coverage drops below a
+# threshold. Unit tests are fast and isolated (no DB, no network), so
+# they run right after lint and before anything expensive.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  COVERAGE_TRESHOLD: "80"   # one visible place to change the gate
+
+jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10    # a hung test must not run for 6 hours (the default)
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-cov
+
+      - name: Run unit tests with coverage
+        run: |
+          pytest tests/unit \
+            --cov=src \
+            --cov-report=term-missing \
+            --cov-report=xml \
+            --cov-fail-under=${{ env.COVERAGE_TRESHOLD }} \
+            --junitxml=junit.xml
+
+      # Always publish reports, even when tests fail
+      # a failing run is exactly when you need the evidence
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: |
+            junit.xml
+            coverage.xml
+          retention-days: 14
