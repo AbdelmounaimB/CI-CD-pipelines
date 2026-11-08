@@ -1,0 +1,112 @@
+name: E2E Tests (Playwright)
+
+# End-to-end tests drive a real browser against a real, running copy of the
+# app. Slowest and most failure-prone layer, so it runs only after cheaper
+# layers pass, on a small set of critical user journeys.
+#
+# Architecture: build the app image -> start it with its dependencies in an
+# ephemeral stack -> wait until healthy -> run Playwright (sharded) ->
+# always upload traces/screenshots on failure.
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true     # a newer push makes the older E2E run pointless
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]    # split the suite into 4 parallel runners
+    env:
+      BASE_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install test dependencies
+        run: pip install -r requirements-e2e.txt   # pytest, pytest-playwright, pytest-split
+
+      # Cache the browser binaries (~400MB). Keyed on the playwright version.
+      - name: Get Playwright version
+        id: pw
+        run: echo "version=$(pip show playwright | awk '/^Version:/{print $2}')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Playwright browsers
+        id: pw-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}
+
+      - name: Install browsers (cache miss)
+        if: steps.pw-cache.outputs.cache-hit != 'true'
+        run: playwright install --with-deps chromium
+
+      - name: Install OS deps only (cache hit)
+        if: steps.pw-cache.outputs.cache-hit == 'true'
+        run: playwright install-deps chromium
+
+      # Ephemeral environment: the full stack from the PR's code, destroyed after the job.
+      - name: Start application stack
+        run: docker compose -f docker-compose.e2e.yml up -d --build
+
+      # Never `sleep 30`. Poll the health endpoint with a hard deadline.
+      - name: Wait for app to be healthy
+        run: |
+          for i in $(seq 1 30); do
+            if curl -fsS "$BASE_URL/health" > /dev/null; then
+              echo "App healthy after ${i} attempts"; exit 0
+            fi
+            sleep 2
+          done
+          echo "App did not become healthy"; docker compose -f docker-compose.e2e.yml logs; exit 1
+
+      - name: Run E2E tests (shard ${{ matrix.shard }}/4)
+        run: |
+          pytest tests/e2e \
+            --splits 4 --group ${{ matrix.shard }} \
+            --tracing retain-on-failure \
+            --screenshot only-on-failure \
+            --video retain-on-failure \
+            --output test-results \
+            --reruns 1 --only-rerun "TimeoutError"
+
+      # Evidence is most valuable when the run is red.
+      - name: Upload traces, screenshots, videos
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-failure-shard-${{ matrix.shard }}
+          path: test-results/
+          retention-days: 7
+
+      - name: Dump app logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.e2e.yml logs --no-color
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down -v
+
+  # One stable name for branch protection (see template 06).
+  e2e-gate:
+    if: always()
+    needs: e2e
+    runs-on: ubuntu-latest
+    steps:
+      - run: '[ "${{ needs.e2e.result }}" = "success" ]'

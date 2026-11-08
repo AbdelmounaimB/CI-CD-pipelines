@@ -1,0 +1,100 @@
+name: 10 - Performance Tests (k6)
+
+# Load testing as an automated gate. k6 thresholds are pass/fail criteria
+# (SLOs written as code): if p95 latency or error rate breaches them, k6
+# exits non-zero and the job fails.
+#
+# Two tiers:
+#   - smoke  : tiny load on every PR; proves the script works and nothing regressed badly
+#   - load   : realistic load, nightly + on demand; too slow/expensive for every PR
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 3 * * *"        # nightly, 03:00 UTC
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Environment to test (never production without approval)"
+        required: true
+        default: "http://localhost:8080"
+      vus:
+        description: "Virtual users for the load test"
+        default: "50"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      BASE_URL: http://localhost:8080
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start application stack
+        run: |
+          docker compose -f docker-compose.e2e.yml up -d --build
+          for i in $(seq 1 30); do
+            curl -fsS "$BASE_URL/health" >/dev/null && exit 0
+            sleep 2
+          done
+          docker compose -f docker-compose.e2e.yml logs; exit 1
+
+      - name: Set up k6
+        uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 smoke test
+        uses: grafana/run-k6-action@v1
+        with:
+          path: tests/performance/smoke.js
+          flags: --out json=results-smoke.json
+
+      - name: Upload raw results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-smoke-results
+          path: results-smoke.json
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down -v
+
+  load:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: grafana/setup-k6-action@v1
+
+      - name: Run k6 load test
+        env:
+          BASE_URL: ${{ inputs.target_url || secrets.PERF_TARGET_URL }}
+          VUS: ${{ inputs.vus || '50' }}
+        run: |
+          k6 run tests/performance/load.js \
+            -e BASE_URL="$BASE_URL" -e VUS="$VUS" \
+            --summary-export=summary.json
+
+      - name: Publish summary to job page
+        if: always()
+        run: |
+          {
+            echo "### k6 load test"
+            echo '```json'
+            jq '{http_req_duration: .metrics.http_req_duration, http_req_failed: .metrics.http_req_failed}' summary.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: k6-load-summary
+          path: summary.json

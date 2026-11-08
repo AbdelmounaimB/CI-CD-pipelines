@@ -1,0 +1,96 @@
+name: Mutation Testing (mutmut)
+
+# Coverage says a line was EXECUTED. Mutation testing says whether a test
+# would NOTICE if the line were WRONG. The tool makes small deliberate bugs
+# ("mutants": > becomes >=, + becomes -, True becomes False) and re-runs the
+# tests. A mutant the tests still pass on is "survived" = a test gap.
+#
+# Expensive (many full test runs), so it does NOT run on every push:
+#   - PRs: only files changed in the PR
+#   - Nightly: whole codebase, trend tracked
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["src/**.py"]
+  schedule:
+    - cron: "0 2 * * 0"        # weekly full run, Sunday 02:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  MIN_MUTATION_SCORE: "70"      # percent of mutants that must be killed
+
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # needed to diff against the base branch
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pytest mutmut
+
+      # Mutating only changed files keeps PR runtime reasonable.
+      - name: Select files to mutate
+        id: scope
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            FILES=$(git diff --name-only origin/${{ github.base_ref }}...HEAD -- 'src/*.py' | paste -sd, -)
+          else
+            FILES=""            # empty = whole codebase
+          fi
+          echo "files=$FILES" >> "$GITHUB_OUTPUT"
+          echo "Mutating: ${FILES:-ALL}"
+
+      # The baseline must be green first: mutating a failing suite is meaningless.
+      - name: Baseline - tests must pass unmutated
+        run: pytest tests/unit -q -x
+
+      # mutmut exits non-zero when mutants survive, so tolerate it here and
+      # enforce OUR threshold in the next step instead.
+      - name: Run mutation testing
+        run: mutmut run --paths-to-mutate "${{ steps.scope.outputs.files || 'src/' }}" || true
+
+      - name: Compute score and enforce threshold
+        run: |
+          mutmut results > mutants.txt || true
+          python - <<'PY'
+          import re, os, sys, subprocess
+          out = subprocess.run(["mutmut", "results"], capture_output=True, text=True).stdout
+          def count(label):
+              m = re.search(rf"{label}.*?\((\d+)\)", out)
+              return int(m.group(1)) if m else 0
+          survived, timeout, suspicious = count("Survived"), count("Timeout"), count("Suspicious")
+          killed = int(subprocess.run(
+              ["bash", "-c", "mutmut junitxml | grep -c '<testcase'"],
+              capture_output=True, text=True).stdout.strip() or 0) - survived - timeout - suspicious
+          total = killed + survived + timeout + suspicious
+          score = 100 * killed / total if total else 100
+          threshold = float(os.environ["MIN_MUTATION_SCORE"])
+          summary = f"Mutation score: {score:.1f}% (killed {killed} / total {total}, survived {survived})"
+          print(summary)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as f:
+              f.write(f"### Mutation testing\n{summary}\nThreshold: {threshold}%\n")
+          if score < threshold:
+              print(f"FAIL: score below {threshold}%"); sys.exit(1)
+          PY
+
+      - name: Upload surviving mutants report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: |
+            mutants.txt
+            .mutmut-cache
+          retention-days: 14

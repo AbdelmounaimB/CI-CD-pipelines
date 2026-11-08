@@ -1,0 +1,93 @@
+name: Contract Tests (Pact)
+
+# Consumer-driven contract testing
+# 1. Consumer tests generate a contract (pact file) from what the consumer really needs
+# 2. The contract is published to a Pact Broker, tagged with branch + commit.
+# 3. The provider replays the contract against its real API and publishes the result
+# 4. can-i-deploy asks the broker: "are the versions I'm about to ship compatible?"
+# Verifies service compatibility without spinning up both services together
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  repository_dispatch:
+    types: [pact-changed]   # broker webhook: re-verify the provider when a consumer publishes a new pact
+
+permissions:
+  contents: read
+  
+env:
+  PACT_BROKER_BASE_URL: ${{ secrets.PACT_BROKER_BASE_URL }}
+  PACT_BROKER_TOKEN: ${{ secrets.PACT_BROKER_TOKEN }}
+  PACT_CLI_IMAGE: pactfoundation/pact-cli:latest   # pin a digest in real use
+  GIT_SHA: ${{ github.sha }}
+  GIT_BRANCH: ${{ github.head_ref || github.ref_name }}
+
+jobs:
+  consumer-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions//setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pact-python pytest
+
+      # Runs against Pact's moch provider; writes pacts/consumer-provider.json
+      - name: Generate contract from consumer tests
+        run: pytest tests/contract/consumer -v
+
+      - name: Publish contract to broker
+        run: |
+          docker run --rm -v "${{ github.workspace }}/pacts:/pacts" \
+            -e PACT_BROKER_BASE_URL -e PACT_BROKER_TOKEN \
+            "$PACT_CLI_IMAGE" publish /pacts \
+            --consumer-app-version "$GIT_SHA" \
+            --branch "$GIT_BRANCH"
+
+  provider-verification:
+    needs: consumer-contract
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+          cache: "pip"
+ 
+      - name: Install dependencies
+        run: pip install -r requirements.txt pact-python pytest
+ 
+      # Starts the real provider, replays every consumer contract against it,
+      # and publishes the verification result to the broker.
+      - name: Verify provider against published contracts
+        env:
+          PROVIDER_VERSION: ${{ github.sha }}
+          PROVIDER_BRANCH: ${{ github.head_ref || github.ref_name }}
+          PUBLISH_RESULTS: "true"
+        run: pytest tests/contract/provider -v
+ 
+  can-i-deploy:
+    needs: provider-verification
+    if: github.ref == 'refs/heads/main'   # gate only the release path
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ask the broker if this version is safe to deploy
+        run: |
+          docker run --rm \
+            -e PACT_BROKER_BASE_URL -e PACT_BROKER_TOKEN \
+            "$PACT_CLI_IMAGE" broker can-i-deploy \
+            --pacticipant my-service \
+            --version "$GIT_SHA" \
+            --to-environment production \
+            --retry-while-unknown 12 --retry-interval 10
+ 
