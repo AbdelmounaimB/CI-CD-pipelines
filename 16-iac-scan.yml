@@ -1,4 +1,4 @@
-name: 15 - IaC Security Scanning (Checkov + Trivy config)
+name: IaC Security Scanning (Checkov + Trivy config)
 
 # Infrastructure-as-Code is code, so its bugs are security bugs:
 # public S3 buckets, 0.0.0.0/0 security groups, unencrypted disks,
@@ -35,7 +35,7 @@ jobs:
       contents: read
       security-events: write
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
 
       - name: Run Checkov
         uses: bridgecrewio/checkov-action@REPLACE_WITH_FULL_COMMIT_SHA # v12.x - look up the SHA of the release tag, then pin it
@@ -51,7 +51,7 @@ jobs:
 
       - name: Upload SARIF
         if: always() && hashFiles('checkov.sarif') != ''
-        uses: github/codeql-action/upload-sarif@662472033e021d55d94146f66f6058822b0b39fd # v3.27.0
+        uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: checkov.sarif
           category: checkov
@@ -61,9 +61,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
 
-      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269ea3c3 # v3.1.0
+      - uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
 
@@ -81,10 +81,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/checkout@v4
 
       - name: Trivy misconfiguration scan
-        uses: aquasecurity/trivy-action@18f2510ee396bbf400402947b394f2dd8c87dbb0 # v0.29.0
+        uses: aquasecurity/trivy-action@v0.29.0
         with:
           scan-type: config
           scan-ref: .

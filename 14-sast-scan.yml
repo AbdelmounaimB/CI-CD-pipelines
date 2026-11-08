@@ -1,4 +1,4 @@
-name: 13 - SAST (CodeQL + Semgrep)
+name: SAST (CodeQL + Semgrep)
 
 # Static Application Security Testing: analyse SOURCE CODE (never running it)
 # for vulnerability patterns: SQL injection, command injection, path traversal,

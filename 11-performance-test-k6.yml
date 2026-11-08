@@ -1,4 +1,4 @@
-name: 10 - Performance Tests (k6)
+name: Performance Tests (k6)
 
 # Load testing as an automated gate. k6 thresholds are pass/fail criteria
 # (SLOs written as code): if p95 latency or error rate breaches them, k6
