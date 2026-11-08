@@ -1,0 +1,110 @@
+name: DAST (OWASP ZAP)
+
+# Dynamic Application Security Testing: attack the RUNNING app from the
+# outside, like a real attacker would, with no access to source code.
+# Finds what static tools cannot see: missing security headers, insecure
+# cookies, CORS misconfiguration, reflected XSS, exposed endpoints,
+# auth/session weaknesses, server misconfiguration.
+#
+# Two scan types:
+#   baseline : PASSIVE only. Spiders the app and inspects responses. Safe, fast. On every PR.
+#   full/API : ACTIVE attacks (injection payloads). Slower, can alter data. Nightly, against an ephemeral stack ONLY.
+#
+# SAFETY RULE: only ever scan environments you own and that are disposable.
+# Never point an active scan at production or at third-party systems.
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 1 * * *"        # nightly active scan
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dast-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TARGET: http://localhost:8080
+
+jobs:
+  zap-baseline:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write              # the ZAP action can open a tracking issue
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start application stack
+        run: |
+          docker compose -f docker-compose.e2e.yml up -d --build
+          for i in $(seq 1 30); do
+            curl -fsS "$TARGET/health" >/dev/null && exit 0
+            sleep 2
+          done
+          docker compose -f docker-compose.e2e.yml logs; exit 1
+
+      - name: ZAP baseline scan (passive)
+        uses: zaproxy/action-baseline@REPLACE_WITH_FULL_COMMIT_SHA # v0.x - look up and pin
+        with:
+          target: ${{ env.TARGET }}
+          rules_file_name: .zap/rules.tsv     # per-rule IGNORE/WARN/FAIL policy
+          fail_action: true                   # FAIL-level alerts fail the job
+          allow_issue_writing: false
+          cmd_options: "-a"                   # include alpha passive rules
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down -v
+
+  zap-api-active:
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start ephemeral application stack
+        run: |
+          docker compose -f docker-compose.e2e.yml up -d --build
+          for i in $(seq 1 30); do
+            curl -fsS "$TARGET/health" >/dev/null && exit 0
+            sleep 2
+          done
+          docker compose -f docker-compose.e2e.yml logs; exit 1
+
+      # Imports the OpenAPI spec so ZAP knows every endpoint and parameter,
+      # then actively attacks each one. Far better coverage than blind spidering for APIs.
+      - name: ZAP API scan (active)
+        uses: zaproxy/action-api-scan@REPLACE_WITH_FULL_COMMIT_SHA # v0.x - look up and pin
+        with:
+          target: ${{ env.TARGET }}/openapi.json
+          format: openapi
+          rules_file_name: .zap/rules.tsv
+          fail_action: true
+          allow_issue_writing: false
+
+      - name: Upload ZAP reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-reports
+          path: |
+            report_html.html
+            report_json.json
+            report_md.md
+          retention-days: 30
+
+      - name: Dump app logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.e2e.yml logs --no-color
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f docker-compose.e2e.yml down -v

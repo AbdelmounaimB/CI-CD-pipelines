@@ -1,0 +1,78 @@
+name: 14 - Dependency Scanning (SCA)
+
+# Software Composition Analysis: your code is mostly other people's code.
+# This checks third-party dependencies for known vulnerabilities (CVEs) and
+# risky licences. Three layers, each answering a different question:
+#
+#   1. dependency-review : "Does THIS PR introduce a vulnerable/forbidden dependency?"   (diff-based, PR only)
+#   2. trivy-fs          : "Is anything in the dependency tree vulnerable RIGHT NOW?"     (full scan, lockfiles)
+#   3. Dependabot        : "Keep dependencies current automatically"                       (config file, see bottom)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"        # daily: new CVEs are published against UNCHANGED code
+
+permissions:
+  contents: read
+
+jobs:
+  dependency-review:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: write     # to comment the summary on the PR
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@v4
+        with:
+          fail-on-severity: high               # block new high/critical vulns
+          deny-licenses: GPL-3.0-only, AGPL-3.0-only   # example licence policy
+          comment-summary-in-pr: on-failure
+
+  trivy-fs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # Report-only pass first: full detail goes to the Security tab, never blocks.
+      - name: Trivy scan (report all severities as SARIF)
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          format: sarif
+          output: trivy-sca.sarif
+          exit-code: "0"
+          ignore-unfixed: true      # only report vulns that HAVE a patch available
+
+      - name: Upload SARIF
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-sca.sarif
+          category: trivy-sca
+
+      # Gate pass: fail only on fixable HIGH/CRITICAL.
+      - name: Trivy gate (fail on fixable HIGH/CRITICAL)
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore    # documented, time-boxed exceptions only

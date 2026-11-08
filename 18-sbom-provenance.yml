@@ -1,0 +1,119 @@
+name: SBOM, Provenance & Signing
+
+# Supply-chain integrity. Three questions, three artifacts:
+#   SBOM        : "WHAT is inside this image?"            (inventory of every package)
+#   Provenance  : "WHERE/HOW was it built, from which commit, by which workflow?"  (SLSA attestation)
+#   Signature   : "Was it really produced by THIS pipeline, and not tampered with?" (cosign, keyless)
+#
+# Keyless = no long-lived signing key to steal. The workflow proves its identity
+# to Sigstore using a short-lived OIDC token issued by GitHub for this exact run.
+#
+# Runs on main/tags only: PRs (especially from forks) must never push or sign.
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-attest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write          # push image to GHCR
+      id-token: write          # mint the OIDC token used for keyless signing / attestation
+      attestations: write      # store attestations on the repo
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@REPLACE_WITH_FULL_COMMIT_SHA # v3.x - look up and pin
+
+      - name: Log in to GHCR
+        uses: docker/login-action@REPLACE_WITH_FULL_COMMIT_SHA # v3.x - look up and pin
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build + push. provenance/sbom flags also embed BuildKit's own attestations.
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@REPLACE_WITH_FULL_COMMIT_SHA # v6.x - look up and pin
+        with:
+          context: .
+          push: true
+          tags: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          provenance: false     # we attach our own signed provenance below
+          sbom: false
+
+      # SBOM generated from the PUSHED image by digest: describes exactly what shipped.
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@REPLACE_WITH_FULL_COMMIT_SHA # v0.x - look up and pin
+        with:
+          image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+          upload-artifact: true
+
+      # Signed SLSA build provenance, bound to the image DIGEST (not a movable tag).
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@REPLACE_WITH_FULL_COMMIT_SHA # v2.x - look up and pin
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      # Signed SBOM attestation: links the inventory to the image cryptographically.
+      - name: Attest SBOM
+        uses: actions/attest-sbom@REPLACE_WITH_FULL_COMMIT_SHA # v2.x - look up and pin
+        with:
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+
+      # Optional classic route: cosign keyless signature stored in the registry.
+      - name: Install cosign
+        uses: sigstore/cosign-installer@REPLACE_WITH_FULL_COMMIT_SHA # v3.x - look up and pin
+
+      - name: Sign image (keyless)
+        run: cosign sign --yes "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}"
+
+  # Prove the consumer side works: a verification step that FAILS if the
+  # image isn't signed by this repo's workflow. Deploy jobs should do the same.
+  verify:
+    needs: build-attest
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+    steps:
+      - name: Verify provenance attestation
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh attestation verify \
+            "oci://${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-attest.outputs.digest }}" \
+            --repo "${{ github.repository }}"
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@REPLACE_WITH_FULL_COMMIT_SHA # v3.x - look up and pin
+
+      - name: Verify cosign signature (identity-bound)
+        run: |
+          cosign verify \
+            --certificate-identity-regexp "^https://github.com/${{ github.repository }}/\.github/workflows/" \
+            --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+            "${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ needs.build-attest.outputs.digest }}"

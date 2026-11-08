@@ -23,6 +23,13 @@ explaining: what it does, why it's built that way, and the trade-offs.
 | 10 | `10-e2e-tests.yml` | Testing | Playwright against an ephemeral preview env |
 | 11 | `11-performance-tests-k6.yml` | Testing | Load test as a merge/deploy gate |
 | 12 | `12-mutation-testing.yml` | Testing | Mutation score gate (tests test the tests) |
+| 13 | `13-secret-scanning.yml` | Security | Gitleaks pre-merge secret detection |
+| 14 | `14-sast-scan.yml` | Security | Static analysis (Semgrep/CodeQL) |
+| 15 | `15-dependency-scan-sca.yml` | Security | Software composition analysis |
+| 16 | `16-iac-scan.yml` | Security | Terraform/K8s manifest scanning |
+| 17 | `17-container-scan.yml` | Security | Image vulnerability scanning |
+| 18 | `18-sbom-provenance.yml` | Security | SBOM generation + SLSA provenance/signing |
+| 19 | `19-dast-scan.yml` | Security | Dynamic scan against staging |
 
 Templates are added incrementally — check each PR/commit for the latest set.
 

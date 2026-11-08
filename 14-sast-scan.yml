@@ -1,0 +1,83 @@
+name: 13 - SAST (CodeQL + Semgrep)
+
+# Static Application Security Testing: analyse SOURCE CODE (never running it)
+# for vulnerability patterns: SQL injection, command injection, path traversal,
+# unsafe deserialisation, weak crypto, tainted data reaching dangerous sinks.
+#
+# Two complementary engines:
+#   - CodeQL : deep dataflow/taint analysis (slow, fewer false positives)
+#   - Semgrep: fast pattern matching, easy custom rules (seconds)
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 5 * * 1"        # weekly: new queries apply to old code too
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sast-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  codeql:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      security-events: write   # required to upload results to the Security tab
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [python]      # add: javascript-typescript, go, java-kotlin ...
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${{ matrix.language }}
+          queries: security-extended      # default suite + more security queries
+
+      - name: Autobuild (needed for compiled languages only)
+        uses: github/codeql-action/autobuild@v3
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:${{ matrix.language }}"
+
+  semgrep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      security-events: write
+    container:
+      image: semgrep/semgrep:1.97.0   # pinned; Semgrep runs inside its own image
+    steps:
+      - uses: actions/checkout@v4
+
+      # --error makes findings fail the job. Rulesets: community security
+      # rules plus your own in .semgrep/ (org-specific patterns).
+      - name: Run Semgrep
+        run: |
+          semgrep scan \
+            --config p/ci \
+            --config p/python \
+            --config p/owasp-top-ten \
+            --config .semgrep/ \
+            --sarif --output semgrep.sarif \
+            --error --severity ERROR
+
+      - name: Upload SARIF
+        if: always() && hashFiles('semgrep.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

@@ -1,0 +1,99 @@
+name: Container Image Scanning (Trivy + Grype)
+
+# Scans the BUILT IMAGE: OS packages (apt/apk), language dependencies baked
+# into the image, and misconfigurations. The image is what actually runs in
+# production, so this catches what source-level scans (templates 13-15) can't:
+# vulnerable base image layers, leftover build tools, root user, embedded secrets.
+#
+# Key design: build ONCE, scan that exact image, and only push it if it passes.
+# Scan-before-push means a vulnerable image never reaches the registry.
+
+on:
+  pull_request:
+    branches: [main]
+    paths: ["Dockerfile*", "src/**", "requirements*.txt", ".github/workflows/16-container-scan.yml"]
+  push:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * *"        # daily: rescan, because new CVEs hit unchanged images
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_NAME: app
+  IMAGE_TAG: ${{ github.sha }}
+
+jobs:
+  scan-image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@REPLACE_WITH_FULL_COMMIT_SHA # v3.x - look up and pin
+
+      # load: true puts the image in the local Docker daemon for scanning.
+      # push: false -> nothing leaves the runner yet.
+      - name: Build image (not pushed)
+        uses: docker/build-push-action@REPLACE_WITH_FULL_COMMIT_SHA # v6.x - look up and pin
+        with:
+          context: .
+          load: true
+          push: false
+          tags: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # Pass 1: full report (all severities) to the Security tab. Never blocks.
+      - name: Trivy - full report
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          format: sarif
+          output: trivy-image.sarif
+          exit-code: "0"
+          ignore-unfixed: true
+          scanners: vuln,secret,misconfig   # also finds secrets baked into layers
+
+      - name: Upload Trivy SARIF
+        if: always() && hashFiles('trivy-image.sarif') != ''
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      # Pass 2: the gate. Fixable HIGH/CRITICAL only.
+      - name: Trivy - gate
+        uses: aquasecurity/trivy-action@v0.29.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          severity: HIGH,CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          trivyignores: .trivyignore
+
+      # Second engine: Grype uses different data sources, so findings differ.
+      - name: Grype - cross-check
+        uses: anchore/scan-action@REPLACE_WITH_FULL_COMMIT_SHA # v6.x - look up and pin
+        with:
+          image: ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+          fail-build: true
+          severity-cutoff: critical     # looser than Trivy: only critical blocks here
+          only-fixed: true
+
+  # Dockerfile quality gate: cheap, catches root user, unpinned tags, ADD vs COPY.
+  hadolint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint Dockerfile
+        run: |
+          docker run --rm -i hadolint/hadolint:v2.12.0-alpine \
+            hadolint --failure-threshold warning - < Dockerfile
