@@ -11,15 +11,18 @@ explaining: what it does, why it's built that way, and the trade-offs.
 
 | # | Workflow | Stage | Concept |
 |---|----------|-------|---------|
-| 01 | `00-minimal-ci.yml` | Foundation | Smallest possible pipeline: trigger, checkout, run |
-| 02 | `01-lint-format.yml` | Code quality | Static formatting/lint gate |
-| 03 | `02-pre-commit-ci.yml` | Code quality | Enforce local pre-commit hooks in CI |
-| 04 | `03-commit-lint-semver.yml` | Code quality | Conventional commits → automated semver |
-| 05 | `04-code-review-gate.yml` | Code quality | CODEOWNERS + required review enforcement |
-| 06 | `05-unit-tests-coverage.yml` | Testing | Unit tests + coverage threshold gate |
-| 07 | `06-matrix-testing.yml` | Testing | OS/version matrix strategy |
-| 08 | `07-integration-tests.yml` | Testing | Service containers (DB/cache) in CI |
-
+| 01 | `01-minimal-ci.yml` | Foundation | Smallest possible pipeline: trigger, checkout, run |
+| 02 | `02-lint-format.yml` | Code quality | Static formatting/lint gate |
+| 03 | `03-pre-commit-ci.yml` | Code quality | Enforce local pre-commit hooks in CI |
+| 04 | `04-commit-lint-semver.yml` | Code quality | Conventional commits → automated semver |
+| 05 | `05-code-review-gate.yml` | Code quality | CODEOWNERS + required review enforcement |
+| 06 | `06-unit-tests-coverage.yml` | Testing | Unit tests + coverage threshold gate |
+| 07 | `07-matrix-testing.yml` | Testing | OS/version matrix strategy |
+| 08 | `08-integration-tests.yml` | Testing | Service containers (DB/cache) in CI |
+| 09 | `09-contract-tests.yml` | Testing | Pact consumer/provider verification |
+| 10 | `10-e2e-tests.yml` | Testing | Playwright against an ephemeral preview env |
+| 11 | `11-performance-tests-k6.yml` | Testing | Load test as a merge/deploy gate |
+| 12 | `12-mutation-testing.yml` | Testing | Mutation score gate (tests test the tests) |
 
 Templates are added incrementally — check each PR/commit for the latest set.
 
